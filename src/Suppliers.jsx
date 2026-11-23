@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabase'
 import { fmt } from './lib/dates'
 
-const line = () => ({ name: '', code: '', qty: '', buy: '', sell: '' })
+const line = () => ({ name: '', code: '', packs: '', pieces: '', buyPack: '', buyPiece: '', sellPiece: '' })
+const num = v => Number(v) || 0
 
 export default function Suppliers() {
   const [products, setProducts] = useState([])
@@ -15,7 +16,7 @@ export default function Suppliers() {
 
   async function load() {
     const [p, i] = await Promise.all([
-      supabase.from('products').select('code,name,price,cost'),
+      supabase.from('products').select('code,name,price,cost,pack_size'),
       supabase.from('supplier_invoices')
         .select('id,company,day,total,supplier_invoice_items(product_name,qty,buy_price,sell_price,old_buy_price,old_sell_price)')
         .order('day', { ascending: false }).limit(50)
@@ -25,34 +26,48 @@ export default function Suppliers() {
   useEffect(() => { load() }, [])
 
   const known = n => products.find(p => p.name === n.trim())
+  const size = l => Number(known(l.name)?.pack_size) || 12
+  const pieces = l => num(l.packs) * size(l) + num(l.pieces)
+  const cost = l => num(l.packs) * num(l.buyPack) + num(l.pieces) * num(l.buyPiece)
+  const avgBuy = l => (pieces(l) ? cost(l) / pieces(l) : 0)
+
   const set = (i, k, v) => setLines(ls => ls.map((l, n) => {
     if (n !== i) return l
     const next = { ...l, [k]: v }
     const p = k === 'name' && known(v)
-    if (p) { next.buy = String(p.cost); next.sell = String(p.price) } // تعبئة تلقائية للمنتج الموجود
+    if (p) { // تعبئة تلقائية لأسعار المنتج الموجود
+      const z = Number(p.pack_size) || 12
+      next.buyPack = String(+(p.cost * z).toFixed(4)); next.buyPiece = String(p.cost); next.sellPiece = String(p.price)
+    }
     return next
   }))
 
-  const total = lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.buy) || 0), 0)
+  const total = lines.reduce((s, l) => s + cost(l), 0)
   const diffOf = l => {
     const p = known(l.name)
-    return p && l.buy !== '' && l.sell !== '' ? { p, buy: Number(l.buy) - Number(p.cost), sell: Number(l.sell) - Number(p.price) } : null
+    return p && pieces(l) > 0 && l.sellPiece !== '' ? { p, buy: avgBuy(l) - Number(p.cost), sell: num(l.sellPiece) - Number(p.price) } : null
   }
-  const costDiff = lines.reduce((s, l) => { const d = diffOf(l); return s + (d ? d.buy * (Number(l.qty) || 0) : 0) }, 0)
+  const costDiff = lines.reduce((s, l) => { const d = diffOf(l); return s + (d ? d.buy * pieces(l) : 0) }, 0)
   const sign = n => (n > 0 ? '+' : '') + n.toFixed(2)
-  const ready = company.trim() && lines.every(l => l.name.trim() && Number(l.qty) > 0 && l.buy !== '' && l.sell !== '')
+  const ready = company.trim() && lines.every(l => l.name.trim() && pieces(l) > 0 && l.sellPiece !== ''
+    && (num(l.packs) === 0 || l.buyPack !== '') && (num(l.pieces) === 0 || l.buyPiece !== ''))
 
   async function save(e) {
     e.preventDefault()
     if (saving || !ready) return
     setSaving(true); setMsg('')
     const { error } = await supabase.rpc('add_supplier_invoice', {
-      payload: { company, day, items: lines.map(l => ({ name: l.name, code: l.code, qty: Number(l.qty), buy_price: Number(l.buy), sell_price: Number(l.sell) })) }
+      payload: { company, day, items: lines.map(l => ({ name: l.name, code: l.code, qty: pieces(l), buy_price: avgBuy(l), sell_price: num(l.sellPiece) })) }
     })
     setSaving(false)
-    if (error) return setMsg('تعذر حفظ الفاتورة. تأكد من الاتصال ومن تشغيل ملف phase3.sql.')
+    if (error) return setMsg('تعذر حفظ الفاتورة. تأكد من الاتصال ومن تشغيل ملفات phase3 وphase3b.')
     setCompany(''); setLines([line()]); load()
   }
+
+  const inp = (i, k, label, step = 'any') => (
+    <label><small>{label}</small>
+      <input type="number" min="0" step={step} value={lines[i][k]} onChange={e => set(i, k, e.target.value)} /></label>
+  )
 
   return (
     <div className="app">
@@ -68,17 +83,22 @@ export default function Suppliers() {
             {l.name.trim() && !known(l.name) && (
               <input placeholder="كود المنتج الجديد (اختياري)" value={l.code} onChange={e => set(i, 'code', e.target.value)} />
             )}
-            <div className="trio">
-              <input type="number" min="0" step="any" placeholder="العدد" value={l.qty} onChange={e => set(i, 'qty', e.target.value)} />
-              <input type="number" min="0" step="0.01" placeholder="سعر الشراء" value={l.buy} onChange={e => set(i, 'buy', e.target.value)} />
-              <input type="number" min="0" step="0.01" placeholder="سعر البيع" value={l.sell} onChange={e => set(i, 'sell', e.target.value)} />
+            <div className="duo">
+              {inp(i, 'packs', `عدد العبوات (${size(l)} قطعة)`)}
+              {inp(i, 'pieces', 'عدد القطع المنفردة')}
             </div>
+            <div className="trio">
+              {inp(i, 'buyPack', 'شراء العبوة', '0.01')}
+              {inp(i, 'buyPiece', 'شراء القطعة', '0.01')}
+              {inp(i, 'sellPiece', 'بيع القطعة', '0.01')}
+            </div>
+            {pieces(l) > 0 && <small className="diffs">المجموع {pieces(l)} قطعة — تكلفة السطر {cost(l).toFixed(2)} ₪</small>}
             {(() => {
               const d = diffOf(l)
               return d && (d.buy !== 0 || d.sell !== 0) ? (
                 <div className="diffs">
-                  <span>الشراء: كان {Number(d.p.cost).toFixed(2)} ← الفرق <b className={d.buy > 0 ? 'neg' : d.buy < 0 ? 'pos' : ''}>{sign(d.buy)}</b></span>
-                  <span>البيع: كان {Number(d.p.price).toFixed(2)} ← الفرق <b className={d.sell > 0 ? 'pos' : d.sell < 0 ? 'neg' : ''}>{sign(d.sell)}</b></span>
+                  <span>شراء القطعة: كان {Number(d.p.cost).toFixed(2)} ← الفرق <b className={d.buy > 0 ? 'neg' : d.buy < 0 ? 'pos' : ''}>{sign(d.buy)}</b></span>
+                  <span>بيع القطعة: كان {Number(d.p.price).toFixed(2)} ← الفرق <b className={d.sell > 0 ? 'pos' : d.sell < 0 ? 'neg' : ''}>{sign(d.sell)}</b></span>
                 </div>
               ) : null
             })()}
@@ -98,7 +118,7 @@ export default function Suppliers() {
           <details key={v.id} className="order">
             <summary><span>{v.day} · {v.company}</span><b>{Number(v.total).toFixed(2)} ₪</b></summary>
             {v.supplier_invoice_items.map((i, n) => (
-              <p key={n}>{i.product_name} × {i.qty} — شراء {i.buy_price}{i.old_buy_price != null && Number(i.old_buy_price) !== Number(i.buy_price) ? ` (كان ${i.old_buy_price})` : ''} / بيع {i.sell_price}{i.old_sell_price != null && Number(i.old_sell_price) !== Number(i.sell_price) ? ` (كان ${i.old_sell_price})` : ''}</p>
+              <p key={n}>{i.product_name} × {i.qty} — شراء {Number(i.buy_price).toFixed(2)}{i.old_buy_price != null && Number(i.old_buy_price) !== Number(i.buy_price) ? ` (كان ${Number(i.old_buy_price).toFixed(2)})` : ''} / بيع {i.sell_price}{i.old_sell_price != null && Number(i.old_sell_price) !== Number(i.sell_price) ? ` (كان ${i.old_sell_price})` : ''}</p>
             ))}
           </details>
         ))}

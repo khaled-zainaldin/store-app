@@ -41,13 +41,16 @@ export default function Sales({ onLogout }) {
   const lines = Object.values(cart)
   const total = lines.reduce((s, l) => s + l.qty * (Number(l.price) || 0), 0)
 
-  const add = p => { setCart(c => ({ ...c, [p.id]: { ...p, qty: (c[p.id]?.qty || 0) + 1 } })); setQ('') }
+  // إضافة المنتج مرة ثانية تزيد الكمية فقط ولا تلغي السعر المعدّل
+  const add = p => {
+    setCart(c => ({ ...c, [p.id]: c[p.id] ? { ...c[p.id], qty: c[p.id].qty + 1 } : { ...p, qty: 1 } }))
+    setQ('')
+  }
   const setQty = (id, qty) => setCart(c => {
     const n = { ...c }
     if (qty <= 0) delete n[id]; else n[id] = { ...n[id], qty }
     return n
   })
-
   const setPrice = (id, price) => setCart(c => ({ ...c, [id]: { ...c[id], price: price === '' ? '' : Number(price) } }))
 
   async function save() {
@@ -111,7 +114,7 @@ export default function Sales({ onLogout }) {
 
       <footer>
         <div className="total">الإجمالي <b>{total.toFixed(2)} ₪</b></div>
-        <button className="primary" disabled={saving || !lines.length} onClick={save}>
+        <button className="primary" disabled={saving || !lines.length || lines.some(l => l.price === '')} onClick={save}>
           {saving ? 'جارٍ الحفظ…' : 'حفظ الفاتورة'}
         </button>
       </footer>
