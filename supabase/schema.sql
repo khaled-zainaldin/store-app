@@ -92,3 +92,8 @@ grant execute on function submit_sale(jsonb) to authenticated;
 
 -- بعد إنشاء مستخدمك الأول من Authentication، اجعله مديراً:
 -- insert into profiles(id, name, role) values ('USER-UUID', 'خالد', 'admin');
+
+-- صلاحيات الوصول (الحماية الفعلية تبقى بسياسات RLS أعلاه)
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on all tables in schema public to authenticated;
+grant usage, select on all sequences in schema public to authenticated;

@@ -7,6 +7,8 @@ import Orders from './Orders.jsx'
 import Dashboard from './Dashboard.jsx'
 import Expenses from './Expenses.jsx'
 import Workers from './Workers.jsx'
+import Suppliers from './Suppliers.jsx'
+import ExpenseReport from './ExpenseReport.jsx'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
@@ -41,12 +43,14 @@ export default function App() {
   return (
     <>
       <nav className="tabs">
-        {[['dash', 'الرئيسية'], ['sell', 'بيع'], ['orders', 'المبيعات'], ['products', 'المنتجات'], ['exp', 'المصاريف'], ['workers', 'العمال']].map(([k, l]) => (
+        {[['dash', 'الرئيسية'], ['sell', 'بيع'], ['orders', 'المبيعات'], ['products', 'المنتجات'], ['exp', 'المصاريف'], ['sup', 'التجار'], ['rep', 'تقرير المصاريف'], ['workers', 'العمال']].map(([k, l]) => (
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>
         ))}
       </nav>
       {tab === 'dash' && <Dashboard />}
       {tab === 'exp' && <Expenses />}
+      {tab === 'rep' && <ExpenseReport />}
+      {tab === 'sup' && <Suppliers />}
       {tab === 'workers' && <Workers />}
       {tab === 'sell' && <Sales onLogout={logout} />}
       {tab === 'orders' && <Orders />}
