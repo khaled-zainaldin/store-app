@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabase'
 import Login from './Login.jsx'
 import Sales from './Sales.jsx'
+import Returns from './Returns.jsx'
 import Products from './Products.jsx'
 import Orders from './Orders.jsx'
 import Dashboard from './Dashboard.jsx'
@@ -14,6 +15,7 @@ export default function App() {
   const [session, setSession] = useState(undefined)
   const [role, setRole] = useState(null)
   const [tab, setTab] = useState('dash')
+  const [sellerTab, setSellerTab] = useState('sell')
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -38,7 +40,20 @@ export default function App() {
   if (!role) return null
 
   const logout = () => supabase.auth.signOut()
-  if (role !== 'admin') return <Sales onLogout={logout} />
+
+  if (role !== 'admin') {
+    return (
+      <>
+        <nav className="tabs">
+          <button className={sellerTab === 'sell' ? 'on' : ''} onClick={() => setSellerTab('sell')}>بيع</button>
+          <button className={sellerTab === 'ret' ? 'on' : ''} onClick={() => setSellerTab('ret')}>إرجاع منتجات</button>
+        </nav>
+        {/* صفحة البيع تبقى شغالة (مخفية) حتى لا تضيع الفاتورة المفتوحة عند التنقل */}
+        <div hidden={sellerTab !== 'sell'}><Sales onLogout={logout} /></div>
+        {sellerTab === 'ret' && <Returns onLogout={logout} />}
+      </>
+    )
+  }
 
   return (
     <>

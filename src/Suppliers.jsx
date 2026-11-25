@@ -1,129 +1,171 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabase'
-import { fmt } from './lib/dates'
 
-const line = () => ({ name: '', code: '', packs: '', pieces: '', buyPack: '', buyPiece: '', sellPiece: '' })
-const num = v => Number(v) || 0
+const BUCKET = 'payments'
+const money = n => Number(n || 0).toFixed(2)
+
+// تصغير صورة الدفعة قبل الرفع (توفير إنترنت). لو فشل التصغير نرفع الأصل.
+async function shrink(file) {
+  try {
+    const bmp = await createImageBitmap(file)
+    const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height))
+    const c = document.createElement('canvas')
+    c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k)
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height)
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82))
+    return blob ? { body: blob, ext: 'jpg', type: 'image/jpeg' } : null
+  } catch { return null }
+}
 
 export default function Suppliers() {
-  const [products, setProducts] = useState([])
   const [invoices, setInvoices] = useState([])
-  const [company, setCompany] = useState('')
-  const [day, setDay] = useState(fmt(new Date()))
-  const [lines, setLines] = useState([line()])
-  const [saving, setSaving] = useState(false)
-  const [msg, setMsg] = useState('')
+  const [urls, setUrls] = useState({})
+  const [q, setQ] = useState('')
+  const [err, setErr] = useState('')
+  const [flash, setFlash] = useState('')
+  const [busy, setBusy] = useState('')
+  const [phones, setPhones] = useState({})
+  const [disc, setDisc] = useState({})
 
   async function load() {
-    const [p, i] = await Promise.all([
-      supabase.from('products').select('code,name,price,cost,pack_size'),
-      supabase.from('supplier_invoices')
-        .select('id,company,day,total,supplier_invoice_items(product_name,qty,buy_price,sell_price,old_buy_price,old_sell_price)')
-        .order('day', { ascending: false }).limit(50)
-    ])
-    setProducts(p.data || []); setInvoices(i.data || [])
+    const { data, error } = await supabase.from('supplier_invoices')
+      .select('id,company,day,total,subtotal,discount,supplier_phone,supplier_invoice_items(product_name,qty,buy_price,sell_price,old_buy_price,old_sell_price),supplier_payment_images(id,image_url,created_at)')
+      .order('day', { ascending: false }).limit(300)
+    if (error) { setErr('تعذر تحميل البيانات. شغّل ملف update_nov25.sql في Supabase أولاً.'); return }
+    setErr(''); setInvoices(data || [])
+    const paths = (data || []).flatMap(v => v.supplier_payment_images.map(i => i.image_url))
+    if (!paths.length) return setUrls({})
+    const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls(paths, 3600)
+    setUrls(Object.fromEntries((signed || []).filter(x => x.signedUrl).map(x => [x.path, x.signedUrl])))
   }
   useEffect(() => { load() }, [])
 
-  const known = n => products.find(p => p.name === n.trim())
-  const size = l => Number(known(l.name)?.pack_size) || 12
-  const pieces = l => num(l.packs) * size(l) + num(l.pieces)
-  const cost = l => num(l.packs) * num(l.buyPack) + num(l.pieces) * num(l.buyPiece)
-  const avgBuy = l => (pieces(l) ? cost(l) / pieces(l) : 0)
-
-  const set = (i, k, v) => setLines(ls => ls.map((l, n) => {
-    if (n !== i) return l
-    const next = { ...l, [k]: v }
-    const p = k === 'name' && known(v)
-    if (p) { // تعبئة تلقائية لأسعار المنتج الموجود
-      const z = Number(p.pack_size) || 12
-      next.buyPack = String(+(p.cost * z).toFixed(4)); next.buyPiece = String(p.cost); next.sellPiece = String(p.price)
-    }
-    return next
-  }))
-
-  const total = lines.reduce((s, l) => s + cost(l), 0)
-  const diffOf = l => {
-    const p = known(l.name)
-    return p && pieces(l) > 0 && l.sellPiece !== '' ? { p, buy: avgBuy(l) - Number(p.cost), sell: num(l.sellPiece) - Number(p.price) } : null
-  }
-  const costDiff = lines.reduce((s, l) => { const d = diffOf(l); return s + (d ? d.buy * pieces(l) : 0) }, 0)
-  const sign = n => (n > 0 ? '+' : '') + n.toFixed(2)
-  const ready = company.trim() && lines.every(l => l.name.trim() && pieces(l) > 0 && l.sellPiece !== ''
-    && (num(l.packs) === 0 || l.buyPack !== '') && (num(l.pieces) === 0 || l.buyPiece !== ''))
-
-  async function save(e) {
-    e.preventDefault()
-    if (saving || !ready) return
-    setSaving(true); setMsg('')
-    const { error } = await supabase.rpc('add_supplier_invoice', {
-      payload: { company, day, items: lines.map(l => ({ name: l.name, code: l.code, qty: pieces(l), buy_price: avgBuy(l), sell_price: num(l.sellPiece) })) }
+  const merchants = useMemo(() => {
+    const m = new Map()
+    invoices.forEach(v => {
+      if (!m.has(v.company)) m.set(v.company, { company: v.company, phone: '', invoices: [] })
+      const g = m.get(v.company)
+      g.invoices.push(v)
+      if (!g.phone && v.supplier_phone) g.phone = v.supplier_phone // الأحدث أولاً
     })
-    setSaving(false)
-    if (error) return setMsg('تعذر حفظ الفاتورة. تأكد من الاتصال ومن تشغيل ملفات phase3 وphase3b.')
-    setCompany(''); setLines([line()]); load()
+    const t = q.trim()
+    return [...m.values()].filter(g => !t || g.company.includes(t) || g.phone.includes(t))
+  }, [invoices, q])
+
+  const say = t => { setFlash(t); setTimeout(() => setFlash(''), 4000) }
+
+  async function savePhone(g) {
+    const { error } = await supabase.rpc('set_supplier_phone', { p_company: g.company, p_phone: phones[g.company] ?? g.phone })
+    if (error) return setErr('تعذر حفظ الرقم.')
+    setErr(''); say('تم حفظ رقم التاجر'); load()
   }
 
-  const inp = (i, k, label, step = 'any') => (
-    <label><small>{label}</small>
-      <input type="number" min="0" step={step} value={lines[i][k]} onChange={e => set(i, k, e.target.value)} /></label>
-  )
+  async function applyDiscount(v) {
+    const val = Number(disc[v.id] ?? v.discount ?? 0) || 0
+    const { error } = await supabase.rpc('set_supplier_invoice_extras', { p_id: String(v.id), p_discount: val, p_phone: null })
+    if (error) return setErr(error.message || 'تعذر تطبيق الخصم.')
+    setErr(''); setDisc(d => { const n = { ...d }; delete n[v.id]; return n }); say('تم تحديث إجمالي الفاتورة'); load()
+  }
+
+  async function uploadOne(v, file) {
+    const s = await shrink(file)
+    const ext = s?.ext || (file.name.split('.').pop() || 'jpg').toLowerCase()
+    const path = `${v.id}/${crypto.randomUUID()}.${ext}`
+    const { error } = await supabase.storage.from(BUCKET).upload(path, s?.body || file, { contentType: s?.type || file.type || 'image/jpeg' })
+    if (error) throw error
+    const { error: e2 } = await supabase.from('supplier_payment_images').insert({ invoice_id: v.id, image_url: path })
+    if (e2) { await supabase.storage.from(BUCKET).remove([path]); throw e2 }
+  }
+
+  async function addImages(v, files) {
+    if (!files.length) return
+    setBusy(String(v.id)); setErr('')
+    try { for (const f of files) await uploadOne(v, f); say('تمت إضافة الصورة') }
+    catch { setErr('تعذر رفع الصورة. تأكد من الاتصال ومن تشغيل ملف update_nov25.sql.') }
+    setBusy(''); load()
+  }
+
+  async function removeImage(img) {
+    const { error } = await supabase.from('supplier_payment_images').delete().eq('id', img.id)
+    if (error) return setErr('تعذر حذف الصورة.')
+    await supabase.storage.from(BUCKET).remove([img.image_url])
+  }
+  async function delImage(img) {
+    if (!confirm('حذف هذه الصورة؟')) return
+    await removeImage(img); load()
+  }
+  async function replaceImage(v, img, file) {
+    if (!file) return
+    setBusy(String(v.id)); setErr('')
+    try { await uploadOne(v, file); await removeImage(img); say('تم تبديل الصورة') }
+    catch { setErr('تعذر تبديل الصورة.') }
+    setBusy(''); load()
+  }
+
+  const subOf = v => (Number(v.subtotal) > 0 ? Number(v.subtotal) : Number(v.total) + Number(v.discount || 0))
 
   return (
     <div className="app">
-      <h2>فواتير التجار</h2>
-      <datalist id="prods">{products.map(p => <option key={p.code} value={p.name} />)}</datalist>
-      <form className="meta" onSubmit={save}>
-        <input placeholder="اسم الشركة" required value={company} onChange={e => setCompany(e.target.value)} />
-        <input type="date" required value={day} onChange={e => setDay(e.target.value)} />
+      <h2>التجار</h2>
+      <p className="empty">فواتير التجار تُضاف من صفحة «المصاريف» ثم «فاتورة تاجر». هنا رقم كل تاجر وفواتيره وصور دفعاته.</p>
+      <input placeholder="ابحث باسم التاجر أو رقمه" value={q} onChange={e => setQ(e.target.value)} />
+      {flash && <p className="notice">{flash}</p>}
+      {err && <p className="error">{err}</p>}
 
-        {lines.map((l, i) => (
-          <div key={i} className="sline">
-            <input list="prods" placeholder="اسم المنتج" value={l.name} onChange={e => set(i, 'name', e.target.value)} />
-            {l.name.trim() && !known(l.name) && (
-              <input placeholder="كود المنتج الجديد (اختياري)" value={l.code} onChange={e => set(i, 'code', e.target.value)} />
-            )}
-            <div className="duo">
-              {inp(i, 'packs', `عدد العبوات (${size(l)} قطعة)`)}
-              {inp(i, 'pieces', 'عدد القطع المنفردة')}
-            </div>
-            <div className="trio">
-              {inp(i, 'buyPack', 'شراء العبوة', '0.01')}
-              {inp(i, 'buyPiece', 'شراء القطعة', '0.01')}
-              {inp(i, 'sellPiece', 'بيع القطعة', '0.01')}
-            </div>
-            {pieces(l) > 0 && <small className="diffs">المجموع {pieces(l)} قطعة — تكلفة السطر {cost(l).toFixed(2)} ₪</small>}
-            {(() => {
-              const d = diffOf(l)
-              return d && (d.buy !== 0 || d.sell !== 0) ? (
-                <div className="diffs">
-                  <span>شراء القطعة: كان {Number(d.p.cost).toFixed(2)} ← الفرق <b className={d.buy > 0 ? 'neg' : d.buy < 0 ? 'pos' : ''}>{sign(d.buy)}</b></span>
-                  <span>بيع القطعة: كان {Number(d.p.price).toFixed(2)} ← الفرق <b className={d.sell > 0 ? 'pos' : d.sell < 0 ? 'neg' : ''}>{sign(d.sell)}</b></span>
-                </div>
-              ) : null
-            })()}
-            {lines.length > 1 && <button type="button" className="link" onClick={() => setLines(lines.filter((_, n) => n !== i))}>حذف هذا المنتج</button>}
+      {merchants.map(g => (
+        <section key={g.company} className="card">
+          <div className="row2"><h3>{g.company}</h3><b>{money(g.invoices.reduce((s, v) => s + Number(v.total), 0))} ₪</b></div>
+          <div className="row2">
+            <input type="tel" inputMode="tel" placeholder="رقم التاجر" value={phones[g.company] ?? g.phone}
+              onChange={e => setPhones({ ...phones, [g.company]: e.target.value })} />
+            <button className="primary" onClick={() => savePhone(g)}>حفظ الرقم</button>
           </div>
-        ))}
-        <button type="button" onClick={() => setLines([...lines, line()])}>+ إضافة منتج آخر للفاتورة</button>
+          {g.phone && <p className="adv"><a href={`tel:${g.phone}`}>اتصال بالتاجر: {g.phone}</a></p>}
 
-        <div className="row2"><span>إجمالي الشراء</span><b>{total.toFixed(2)} ₪</b></div>
-        <div className="row2"><span>فرق التكلفة مقابل آخر سعر شراء</span><b className={costDiff > 0 ? 'neg' : costDiff < 0 ? 'pos' : ''}>{sign(costDiff)} ₪</b></div>
-        {msg && <p className="error">{msg}</p>}
-        <button className="primary" disabled={saving || !ready}>{saving ? 'جارٍ الحفظ…' : 'حفظ الفاتورة'}</button>
-      </form>
+          <div className="cart">
+            {g.invoices.map(v => (
+              <details key={v.id} className="order">
+                <summary>
+                  <span>{v.day}{v.supplier_payment_images.length > 0 && ` · ${v.supplier_payment_images.length} صورة`}</span>
+                  <b>{money(v.total)} ₪</b>
+                </summary>
 
-      <section className="cart">
-        {invoices.map(v => (
-          <details key={v.id} className="order">
-            <summary><span>{v.day} · {v.company}</span><b>{Number(v.total).toFixed(2)} ₪</b></summary>
-            {v.supplier_invoice_items.map((i, n) => (
-              <p key={n}>{i.product_name} × {i.qty} — شراء {Number(i.buy_price).toFixed(2)}{i.old_buy_price != null && Number(i.old_buy_price) !== Number(i.buy_price) ? ` (كان ${Number(i.old_buy_price).toFixed(2)})` : ''} / بيع {i.sell_price}{i.old_sell_price != null && Number(i.old_sell_price) !== Number(i.sell_price) ? ` (كان ${i.old_sell_price})` : ''}</p>
+                {v.supplier_invoice_items.map((i, n) => (
+                  <p key={n}>{i.product_name} × {i.qty} — شراء {money(i.buy_price)}{i.old_buy_price != null && Number(i.old_buy_price) !== Number(i.buy_price) ? ` (كان ${money(i.old_buy_price)})` : ''} / بيع {i.sell_price}{i.old_sell_price != null && Number(i.old_sell_price) !== Number(i.sell_price) ? ` (كان ${i.old_sell_price})` : ''}</p>
+                ))}
+
+                <div className="retform">
+                  <div className="row2"><span>إجمالي الأصناف</span><b>{money(subOf(v))} ₪</b></div>
+                  <label className="row2"><span>خصم مبلغ</span>
+                    <input type="number" min="0" step="0.01" value={disc[v.id] ?? (Number(v.discount) || '')} placeholder="0"
+                      onChange={e => setDisc({ ...disc, [v.id]: e.target.value })} /></label>
+                  <button className="primary" onClick={() => applyDiscount(v)}>تطبيق الخصم</button>
+                  <div className="row2"><span>الإجمالي بعد الخصم</span><b>{money(v.total)} ₪</b></div>
+                </div>
+
+                <div className="imgs">
+                  {v.supplier_payment_images.map(img => (
+                    <div key={img.id} className="thumb">
+                      {urls[img.image_url]
+                        ? <a href={urls[img.image_url]} target="_blank" rel="noreferrer"><img src={urls[img.image_url]} alt="صورة دفعة" loading="lazy" /></a>
+                        : <div className="ph">…</div>}
+                      <div className="acts">
+                        <label className="link">تبديل
+                          <input type="file" accept="image/*" hidden onChange={e => { replaceImage(v, img, e.target.files[0]); e.target.value = '' }} /></label>
+                        <button className="link" onClick={() => delImage(img)}>حذف</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <label className="filebtn">{busy === String(v.id) ? 'جارٍ الرفع…' : '+ إضافة صورة دفعة'}
+                  <input type="file" accept="image/*" multiple hidden disabled={busy === String(v.id)}
+                    onChange={e => { addImages(v, [...e.target.files]); e.target.value = '' }} /></label>
+              </details>
             ))}
-          </details>
-        ))}
-        {!invoices.length && <p className="empty">ما في فواتير تجار بعد.</p>}
-      </section>
+          </div>
+        </section>
+      ))}
+      {!merchants.length && !err && <p className="empty">ما في فواتير تجار بعد.</p>}
     </div>
   )
 }

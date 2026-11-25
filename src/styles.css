@@ -101,3 +101,11 @@ footer { position: fixed; inset-inline: 0; bottom: 0; background: var(--surface)
 .duo small, .trio small { display: block; color: var(--muted); font-size: .8rem; margin-bottom: 4px; }
 
 .soldline { grid-column: 1 / -1; color: var(--ok); font-weight: 500; }
+
+.notice { background: #e6f4ec; color: var(--ok); padding: 10px 12px; border-radius: 8px; margin: 0; }
+.imgs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.thumb { display: grid; gap: 4px; }
+.thumb img, .thumb .ph { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); display: grid; place-items: center; }
+.thumb .acts { display: flex; justify-content: space-between; font-size: .8rem; }
+.filebtn { display: inline-block; margin-top: 8px; padding: 10px 14px; border: 1px dashed var(--brand); border-radius: 8px; color: var(--brand); cursor: pointer; }
+.order .retform label { color: inherit; }
