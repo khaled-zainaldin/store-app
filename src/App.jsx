@@ -14,7 +14,7 @@ import ExpenseReport from './ExpenseReport.jsx'
 export default function App() {
   const [session, setSession] = useState(undefined)
   const [role, setRole] = useState(null)
-  const [tab, setTab] = useState('dash')
+  const [tab, setTab] = useState('sell') // أول صفحة بعد الدخول: البيع
   const [sellerTab, setSellerTab] = useState('sell')
 
   useEffect(() => {
@@ -58,16 +58,17 @@ export default function App() {
   return (
     <>
       <nav className="tabs">
-        {[['dash', 'الرئيسية'], ['sell', 'بيع'], ['orders', 'المبيعات'], ['products', 'المنتجات'], ['exp', 'المصاريف'], ['sup', 'التجار'], ['rep', 'تقرير المصاريف'], ['workers', 'العمال']].map(([k, l]) => (
+        {[['sell', 'بيع'], ['dash', 'الرئيسية'], ['orders', 'المبيعات'], ['products', 'المنتجات'], ['exp', 'المصاريف'], ['sup', 'التجار'], ['rep', 'تقرير المصاريف'], ['workers', 'العمال']].map(([k, l]) => (
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>
         ))}
       </nav>
+      {/* صفحة البيع تبقى شغالة (مخفية) حتى لا تضيع الفاتورة المفتوحة عند التنقل */}
+      <div hidden={tab !== 'sell'}><Sales onLogout={logout} /></div>
       {tab === 'dash' && <Dashboard />}
       {tab === 'exp' && <Expenses />}
       {tab === 'rep' && <ExpenseReport />}
       {tab === 'sup' && <Suppliers />}
       {tab === 'workers' && <Workers />}
-      {tab === 'sell' && <Sales onLogout={logout} />}
       {tab === 'orders' && <Orders />}
       {tab === 'products' && <Products />}
     </>

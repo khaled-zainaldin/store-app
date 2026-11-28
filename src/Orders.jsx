@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabase'
-import { weekStart } from './lib/dates'
+import { fmt, weekStart } from './lib/dates'
+import { fetchAll } from './lib/fetchAll'
+import { METHOD, saleProfit, returnProfit } from './lib/reports'
 
 const PERIODS = [['day', 'اليوم'], ['week', 'الأسبوع'], ['month', 'الشهر']]
 const startOf = p => {
@@ -9,12 +11,13 @@ const startOf = p => {
   if (p === 'month') return new Date(n.getFullYear(), n.getMonth(), 1)
   return new Date(n.getFullYear(), n.getMonth(), n.getDate())
 }
-const METHOD = { cash: 'نقداً', jawwal_pay: 'جوال بي', bank_of_palestine: 'بنك فلسطين', palpay: 'بال باي' }
 
 const retQty = (r, pid) => r.sale_returns.flatMap(x => x.sale_return_items)
   .filter(i => i.product_id === pid).reduce((s, i) => s + Number(i.qty), 0)
 const retTotal = r => r.sale_returns.reduce((s, x) => s + Number(x.total), 0)
 const netTotal = r => Number(r.total) - retTotal(r)
+// ربح الفاتورة بعد خصم ما أُرجع منها (بتكلفة وقت البيع)
+const profitOf = r => saleProfit(r) - r.sale_returns.reduce((s, x) => s + returnProfit(x), 0)
 
 function ReturnForm({ sale, onDone }) {
   const [qty, setQty] = useState({})
@@ -28,11 +31,11 @@ function ReturnForm({ sale, onDone }) {
   async function submit() {
     if (saving || refund <= 0) return
     setSaving(true); setErr('')
-    const { error } = await supabase.rpc('process_return', {
+    const { error } = await supabase.rpc('submit_return', {
       payload: { sale_id: sale.id, note, items: lines.map(i => ({ product_id: i.product_id, qty: Number(qty[i.product_id]) || 0 })) }
     })
     setSaving(false)
-    if (error) return setErr('تعذر تنفيذ المرتجع. تأكد من الكميات ومن تشغيل ملف phase4.sql.')
+    if (error) return setErr('تعذر تنفيذ المرتجع. تأكد من الكميات ومن تشغيل ملف store_full_setup.sql.')
     onDone()
   }
 
@@ -59,14 +62,36 @@ export default function Orders() {
   const [view, setView] = useState('sales')
   const [q, setQ] = useState('')
   const [period, setPeriod] = useState('day')
+  const [dateVal, setDateVal] = useState('')
   const [open, setOpen] = useState(null)
+  const [err, setErr] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const load = () => supabase.from('sales')
-    .select('id,total,payment_method,created_at,profiles(name),customers(name,phone),sale_items(product_id,qty,price,products(name)),sale_returns(total,created_at,note,sale_return_items(product_id,qty))')
-    .gte('created_at', startOf(period).toISOString())
-    .order('created_at', { ascending: false })
-    .then(({ data }) => setRows(data || []))
-  useEffect(() => { load() }, [period])
+  // الفترة: اليوم/الأسبوع/الشهر، أو يوم محدد من التقويم
+  const range = () => {
+    if (period === 'date' && dateVal) {
+      const [y, m, d] = dateVal.split('-').map(Number)
+      return [new Date(y, m - 1, d), new Date(y, m - 1, d + 1)]
+    }
+    return [startOf(period), null]
+  }
+
+  const load = () => {
+    const [s, e] = range()
+    setLoading(true); setErr('')
+    return fetchAll(() => {
+      let qy = supabase.from('sales')
+        .select('id,total,payment_method,created_at,profiles(name),customers(name,phone),sale_items(product_id,qty,price,cost,products(name,cost)),sale_returns(total,created_at,note,sale_return_items(product_id,qty,price,cost,products(cost)))')
+        .gte('created_at', s.toISOString())
+      if (e) qy = qy.lt('created_at', e.toISOString())
+      return qy.order('created_at', { ascending: false }).order('id')
+    }).then(setRows).catch(() => setErr('تعذر تحميل المبيعات. تأكد من الاتصال ومن تشغيل ملف store_full_setup.sql.'))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [period, dateVal])
+
+  const pickPeriod = k => { setDateVal(''); setPeriod(k) }
+  const pickDate = v => { setDateVal(v); setPeriod(v ? 'date' : 'day') }
 
   const match = r => {
     const t = q.trim()
@@ -74,6 +99,18 @@ export default function Orders() {
   }
   const periodTotal = rows.reduce((s, r) => s + netTotal(r), 0)
   const periodReturns = rows.reduce((s, r) => s + retTotal(r), 0)
+  const periodProfit = rows.reduce((s, r) => s + profitOf(r), 0)
+
+  // الربح اليومي: مبيعات وربح كل يوم ضمن الفترة
+  const days = useMemo(() => {
+    const m = {}
+    rows.forEach(r => {
+      const k = fmt(new Date(r.created_at))
+      const g = (m[k] ??= { day: k, count: 0, net: 0, profit: 0 })
+      g.count += 1; g.net += netTotal(r); g.profit += profitOf(r)
+    })
+    return Object.values(m).sort((a, b) => b.day.localeCompare(a.day))
+  }, [rows])
 
   const customers = useMemo(() => {
     const m = {}
@@ -95,13 +132,32 @@ export default function Orders() {
     <div className="app">
       <h2>المبيعات</h2>
       <div className="tabs inner">
-        {PERIODS.map(([k, l]) => <button key={k} className={period === k ? 'on' : ''} onClick={() => setPeriod(k)}>{l}</button>)}
+        {PERIODS.map(([k, l]) => <button key={k} className={period === k ? 'on' : ''} onClick={() => pickPeriod(k)}>{l}</button>)}
       </div>
-      <div className="stats">
-        <div><small>عدد الفواتير</small><b>{rows.length}</b></div>
-        <div><small>صافي المبيعات</small><b>{periodTotal.toFixed(2)} ₪</b></div>
+      <label className="row2">
+        <span>بحث بتاريخ محدد</span>
+        <input type="date" value={dateVal} max={fmt(new Date())} onChange={e => pickDate(e.target.value)} />
+      </label>
+      {err && <p className="error">{err}</p>}
+      <div className="stats big">
+        <div className="kpi"><small>عدد الفواتير</small><b>{rows.length}</b></div>
+        <div className="kpi"><small>صافي المبيعات</small><b>{periodTotal.toFixed(2)} ₪</b></div>
+        <div className={'kpi ' + (periodProfit >= 0 ? 'good' : 'bad')}><small>ربح المبيعات</small><b>{periodProfit.toFixed(2)} ₪</b></div>
+        <div className="kpi"><small>المرتجعات</small><b>{periodReturns.toFixed(2)} ₪</b></div>
       </div>
-      {periodReturns > 0 && <p className="empty">بعد خصم مرتجعات بقيمة {periodReturns.toFixed(2)} ₪</p>}
+
+      {days.length > 0 && (
+        <section className="card"><h3>الربح اليومي</h3>
+          {days.map(g => (
+            <div key={g.day} className="row2">
+              <span>{g.day} · {g.count} فاتورة · مبيعات {g.net.toFixed(2)}</span>
+              <b className={g.profit >= 0 ? 'pos' : 'neg'}>{g.profit.toFixed(2)} ₪</b>
+            </div>
+          ))}
+        </section>
+      )}
+      <p className="sub">الربح = سعر البيع − تكلفة القطعة وقت البيع، بعد خصم المرتجعات. هذه قبل مصاريف المحل والرواتب (انظر «الرئيسية»).</p>
+
       <div className="tabs inner">
         <button className={view === 'sales' ? 'on' : ''} onClick={() => setView('sales')}>الفواتير</button>
         <button className={view === 'cust' ? 'on' : ''} onClick={() => setView('cust')}>الزبائن</button>
@@ -117,6 +173,7 @@ export default function Orders() {
             </summary>
             <p>الموظف: {r.profiles?.name || '—'} · الدفع: {METHOD[r.payment_method] || r.payment_method}</p>
             {items(r)}
+            <p>ربح الفاتورة: <b className={profitOf(r) >= 0 ? 'pos' : 'neg'}>{profitOf(r).toFixed(2)} ₪</b></p>
             {r.sale_returns.map((x, n) => <p key={n} className="neg">مرتجع {Number(x.total).toFixed(2)} ₪ بتاريخ {new Date(x.created_at).toLocaleDateString('ar')}{x.note ? ` — ${x.note}` : ''}</p>)}
             {open === r.id
               ? <ReturnForm sale={r} onDone={() => { setOpen(null); load() }} />
@@ -135,7 +192,8 @@ export default function Orders() {
             ))}
           </details>
         ))}
-        {!rows.length && <p className="empty">ما في مبيعات بهذه الفترة.</p>}
+        {loading && <p className="empty">جارٍ التحميل…</p>}
+        {!loading && !rows.length && !err && <p className="empty">ما في مبيعات بهذه الفترة.</p>}
       </section>
     </div>
   )

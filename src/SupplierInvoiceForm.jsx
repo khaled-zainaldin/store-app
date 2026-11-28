@@ -5,7 +5,7 @@ import { fmt } from './lib/dates'
 const line = () => ({ name: '', code: '', packs: '', pieces: '', buyPack: '', buyPiece: '', sellPiece: '' })
 const num = v => Number(v) || 0
 
-// نموذج إضافة فاتورة تاجر (حسابات الأصناف مثل السابق بدون أي تغيير) + رقم التاجر + خصم مبلغ
+// نموذج فاتورة تاجر: سعر الشراء الجديد يدخل بمتوسط مرجّح مع المخزون الحالي، والخصم يوزَّع على الأصناف
 export default function SupplierInvoiceForm() {
   const [products, setProducts] = useState([])
   const [companies, setCompanies] = useState([])
@@ -19,7 +19,7 @@ export default function SupplierInvoiceForm() {
 
   async function load() {
     const [p, i] = await Promise.all([
-      supabase.from('products').select('code,name,price,cost,pack_size'),
+      supabase.from('products').select('code,name,price,cost,stock,pack_size'),
       supabase.from('supplier_invoices').select('company,supplier_phone,day').order('day', { ascending: false }).limit(300)
     ])
     setProducts(p.data || [])
@@ -47,9 +47,9 @@ export default function SupplierInvoiceForm() {
     if (n !== i) return l
     const next = { ...l, [k]: v }
     const p = k === 'name' && known(v)
-    if (p) { // تعبئة تلقائية لأسعار المنتج الموجود
+    if (p) { // تعبئة تلقائية بأسعار المنتج الموجود (التكلفة هنا هي المتوسط الحالي)
       const z = Number(p.pack_size) || 12
-      next.buyPack = String(+(p.cost * z).toFixed(4)); next.buyPiece = String(p.cost); next.sellPiece = String(p.price)
+      next.buyPack = String(+(p.cost * z).toFixed(4)); next.buyPiece = String(+Number(p.cost).toFixed(4)); next.sellPiece = String(p.price)
     }
     return next
   }))
@@ -58,6 +58,18 @@ export default function SupplierInvoiceForm() {
   const disc = num(discount)
   const badDiscount = disc < 0 || disc > total
   const finalTotal = total - (badDiscount ? 0 : disc)
+  const factor = total > 0 && !badDiscount ? finalTotal / total : 1 // نسبة الخصم الموزَّعة على الأصناف
+
+  // التكلفة الجديدة للقطعة = متوسط مرجّح بين المخزون الحالي (بتكلفته) والكمية الجديدة (بعد الخصم)
+  const newAvg = l => {
+    const pcs = pieces(l)
+    if (!pcs) return null
+    const net = avgBuy(l) * factor
+    const p = known(l.name)
+    if (!p) return { net, avg: net, stock: 0 }
+    const s = Math.max(Number(p.stock) || 0, 0)
+    return { net, avg: (s * Number(p.cost) + pcs * net) / (s + pcs), stock: Number(p.stock) || 0 }
+  }
   const diffOf = l => {
     const p = known(l.name)
     return p && pieces(l) > 0 && l.sellPiece !== '' ? { p, buy: avgBuy(l) - Number(p.cost), sell: num(l.sellPiece) - Number(p.price) } : null
@@ -71,39 +83,19 @@ export default function SupplierInvoiceForm() {
     e.preventDefault()
     if (saving || !ready) return
     setSaving(true); setMsg({ type: '', text: '' })
-    const name = company.trim()
-    const idsNow = async () => {
-      const { data } = await supabase.from('supplier_invoices').select('id').eq('company', name).eq('day', day)
-      return (data || []).map(r => String(r.id))
-    }
-    const before = await idsNow()
-
-    const { error } = await supabase.rpc('add_supplier_invoice', {
-      payload: { company: name, day, items: lines.map(l => ({ name: l.name, code: l.code, qty: pieces(l), buy_price: avgBuy(l), sell_price: num(l.sellPiece) })) }
+    const { data, error } = await supabase.rpc('add_supplier_invoice', {
+      payload: {
+        company: company.trim(), day, discount: disc, phone: phone.trim(),
+        items: lines.map(l => ({
+          name: l.name, code: l.code, qty: pieces(l), buy_price: avgBuy(l),
+          line_total: +cost(l).toFixed(4), sell_price: num(l.sellPiece)
+        }))
+      }
     })
-    if (error) {
-      setSaving(false)
-      return setMsg({ type: 'error', text: 'تعذر حفظ الفاتورة. تأكد من الاتصال ومن تشغيل ملفات phase3 وphase3b.' })
-    }
-
-    // الفاتورة انحفظت. الآن نطبّق الخصم ورقم التاجر عليها (الخصم يُحسب من إجمالي الفاتورة المحفوظ فعلاً)
-    let text = `تم حفظ الفاتورة. الإجمالي ${finalTotal.toFixed(2)} ₪`
-    let type = 'ok'
-    if (disc > 0 || phone.trim()) {
-      const id = (await idsNow()).find(x => !before.includes(x))
-      let e2 = null
-      if (id) {
-        const r = await supabase.rpc('set_supplier_invoice_extras', { p_id: id, p_discount: disc > 0 ? disc : null, p_phone: phone.trim() || null })
-        e2 = r.error
-        if (!e2 && r.data != null) text = `تم حفظ الفاتورة. الإجمالي بعد الخصم ${Number(r.data).toFixed(2)} ₪`
-      }
-      if (!id || e2) {
-        type = 'error'
-        text = 'تم حفظ الفاتورة لكن لم يُطبَّق الخصم/رقم التاجر. افتح صفحة «التجار» وعدّلهما من الفاتورة (وتأكد من تشغيل ملف update_nov25.sql).'
-      }
-    }
     setSaving(false)
-    setMsg({ type, text })
+    if (error) return setMsg({ type: 'error', text: `تعذر حفظ الفاتورة. ${error.message || ''} تأكد من الاتصال ومن تشغيل ملف store_full_setup.sql.` })
+    const t = Number(data?.total ?? finalTotal)
+    setMsg({ type: 'ok', text: disc > 0 ? `تم حفظ الفاتورة. الإجمالي بعد الخصم ${t.toFixed(2)} ₪` : `تم حفظ الفاتورة. الإجمالي ${t.toFixed(2)} ₪` })
     setCompany(''); setPhone(''); setDiscount(''); setLines([line()]); load()
   }
 
@@ -121,34 +113,42 @@ export default function SupplierInvoiceForm() {
         <input type="tel" inputMode="tel" placeholder="رقم التاجر (اختياري)" value={phone} onChange={e => setPhone(e.target.value)} />
         <input type="date" required value={day} onChange={e => setDay(e.target.value)} />
 
-        {lines.map((l, i) => (
-          <div key={i} className="sline">
-            <input list="prods" placeholder="اسم المنتج" value={l.name} onChange={e => set(i, 'name', e.target.value)} />
-            {l.name.trim() && !known(l.name) && (
-              <input placeholder="كود المنتج الجديد (اختياري)" value={l.code} onChange={e => set(i, 'code', e.target.value)} />
-            )}
-            <div className="duo">
-              {inp(i, 'packs', `عدد العبوات (${size(l)} قطعة)`)}
-              {inp(i, 'pieces', 'عدد القطع المنفردة')}
-            </div>
-            <div className="trio">
-              {inp(i, 'buyPack', 'شراء العبوة', '0.01')}
-              {inp(i, 'buyPiece', 'شراء القطعة', '0.01')}
-              {inp(i, 'sellPiece', 'بيع القطعة', '0.01')}
-            </div>
-            {pieces(l) > 0 && <small className="diffs">المجموع {pieces(l)} قطعة — تكلفة السطر {cost(l).toFixed(2)} ₪</small>}
-            {(() => {
-              const d = diffOf(l)
-              return d && (d.buy !== 0 || d.sell !== 0) ? (
+        {lines.map((l, i) => {
+          const d = diffOf(l), a = newAvg(l)
+          return (
+            <div key={i} className="sline">
+              <input list="prods" placeholder="اسم المنتج" value={l.name} onChange={e => set(i, 'name', e.target.value)} />
+              {l.name.trim() && !known(l.name) && (
+                <input placeholder="كود المنتج الجديد (اختياري)" value={l.code} onChange={e => set(i, 'code', e.target.value)} />
+              )}
+              <div className="duo">
+                {inp(i, 'packs', `عدد العبوات (${size(l)} قطعة)`)}
+                {inp(i, 'pieces', 'عدد القطع المنفردة')}
+              </div>
+              <div className="trio">
+                {inp(i, 'buyPack', 'شراء العبوة', '0.01')}
+                {inp(i, 'buyPiece', 'شراء القطعة', '0.01')}
+                {inp(i, 'sellPiece', 'بيع القطعة', '0.01')}
+              </div>
+              {pieces(l) > 0 && <small className="diffs">المجموع {pieces(l)} قطعة — تكلفة السطر {cost(l).toFixed(2)} ₪</small>}
+              {d && (d.buy !== 0 || d.sell !== 0) && (
                 <div className="diffs">
                   <span>شراء القطعة: كان {Number(d.p.cost).toFixed(2)} ← الفرق <b className={d.buy > 0 ? 'neg' : d.buy < 0 ? 'pos' : ''}>{sign(d.buy)}</b></span>
                   <span>بيع القطعة: كان {Number(d.p.price).toFixed(2)} ← الفرق <b className={d.sell > 0 ? 'pos' : d.sell < 0 ? 'neg' : ''}>{sign(d.sell)}</b></span>
                 </div>
-              ) : null
-            })()}
-            {lines.length > 1 && <button type="button" className="link" onClick={() => setLines(lines.filter((_, n) => n !== i))}>حذف هذا المنتج</button>}
-          </div>
-        ))}
+              )}
+              {a && (
+                <div className="diffs">
+                  {known(l.name)
+                    ? <span>متوسط التكلفة النهائي للقطعة: <b>{a.avg.toFixed(2)}</b> (المخزون الحالي {Math.max(a.stock, 0)} + الجديد {pieces(l)})</span>
+                    : <span>تكلفة القطعة للمنتج الجديد: <b>{a.net.toFixed(2)}</b></span>}
+                  {factor < 1 && <span>بعد توزيع الخصم، سعر شراء القطعة الفعلي {a.net.toFixed(2)}</span>}
+                </div>
+              )}
+              {lines.length > 1 && <button type="button" className="link" onClick={() => setLines(lines.filter((_, n) => n !== i))}>حذف هذا المنتج</button>}
+            </div>
+          )
+        })}
         <button type="button" onClick={() => setLines([...lines, line()])}>+ إضافة منتج آخر للفاتورة</button>
 
         <div className="row2"><span>إجمالي الشراء</span><b>{total.toFixed(2)} ₪</b></div>

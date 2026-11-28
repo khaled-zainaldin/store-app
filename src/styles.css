@@ -109,3 +109,19 @@ footer { position: fixed; inset-inline: 0; bottom: 0; background: var(--surface)
 .thumb .acts { display: flex; justify-content: space-between; font-size: .8rem; }
 .filebtn { display: inline-block; margin-top: 8px; padding: 10px 14px; border: 1px dashed var(--brand); border-radius: 8px; color: var(--brand); cursor: pointer; }
 .order .retform label { color: inherit; }
+
+/* ===== إضافات تحديث 27 نوفمبر ===== */
+.sub { margin: 0; color: var(--muted); font-size: .85rem; }
+.warnbox { background: #fffaf0; border: 1px solid #e6b800; border-radius: 8px; padding: 10px 12px; margin: 0; }
+.panel { display: grid; gap: 8px; margin-top: 10px; padding: 10px; background: var(--bg); border-radius: 8px; }
+.panel label small { display: block; color: var(--muted); font-size: .8rem; margin-bottom: 4px; }
+.panel .adv { margin: 0; }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.pager button { padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.pager button:disabled { opacity: .4; cursor: not-allowed; }
+.stopped { opacity: .65; }
+.day:disabled { opacity: .6; cursor: not-allowed; }
+.card .row2 { padding: 4px 0; }
+textarea { font: inherit; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.link.neg { color: var(--bad); }
+.order details summary { cursor: pointer; }
